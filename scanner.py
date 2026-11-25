@@ -16,6 +16,7 @@ SYMBOLS = {
     "XAU/USD": "GC=F",
     "EUR/USD": "EURUSD=X",
     "GBP/USD": "GBPUSD=X",
+    "AUD/USD": "AUDUSD=X",
     "DXY":     "DX-Y.NYB",
     "USD/JPY": "USDJPY=X",
     "USD/CHF": "USDCHF=X",
