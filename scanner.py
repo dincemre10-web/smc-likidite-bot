@@ -50,7 +50,11 @@ def send_telegram(msg):
         return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}
-    requests.post(url, json=payload, timeout=15)
+    resp = requests.post(url, json=payload, timeout=15)
+    if resp.ok:
+        print("Telegram mesaji basariyla gonderildi.")
+    else:
+        print(f"Telegram API Hatasi ({resp.status_code}): {resp.text}")
 
 def fmt_price(name, val):
     if val is None:
@@ -63,6 +67,8 @@ def fmt_price(name, val):
 
 def fetch_ohlc(ticker, period, interval):
     df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=False)
+    if df.empty and ticker == "DX-Y.NYB":
+        df = yf.download("DX=F", period=period, interval=interval, progress=False, auto_adjust=False)
     if df.empty:
         return df
     if isinstance(df.columns, pd.MultiIndex):
@@ -205,14 +211,15 @@ def scan_timeframe_pools(df, ext_len, int_len, d1_trend):
 # ==========================================
 # 4. ANA PARİTE TARAMA AKIŞI (1D -> 4H -> 1H)
 # ==========================================
-def analyze_symbol(name, ticker, state):
+def analyze_symbol(name, ticker, state, status_report):
     df_1d = fetch_ohlc(ticker, period="1y", interval="1d")
     df_1h = fetch_ohlc(ticker, period="60d", interval="1h")
 
     if len(df_1d) < 20 or len(df_1h) < 45:
+        print(f"{name}: Yetersiz veri (1D: {len(df_1d)}, 1H: {len(df_1h)})")
+        status_report.append(f"• <b>{name}:</b> Veri alınamadı")
         return
 
-    # 1H verisinden 4H mumlarını oluştur
     df_4h = df_1h.resample("4h").agg({
         "Open": "first",
         "High": "max",
@@ -240,6 +247,9 @@ def analyze_symbol(name, ticker, state):
             d1_trend = -1
 
     d1_yon_txt = "BULLISH (ALIŞ) 🟢" if d1_trend == 1 else "BEARISH (SATIŞ) 🔻" if d1_trend == -1 else "NÖTR (YATAY) ⚪"
+    current_prc = fmt_price(name, df_1h["Close"].values[-1])
+    status_report.append(f"• <b>{name}</b> ({current_prc}): {d1_yon_txt}")
+    print(f"{name} tarandi -> 1D Yon: {d1_yon_txt}")
 
     # --- B. 4H VE 1H HAVUZ TARAMALARI ---
     res_4h = scan_timeframe_pools(df_4h, H4_EXT_LEN, H4_INT_LEN, d1_trend)
@@ -262,8 +272,7 @@ def analyze_symbol(name, ticker, state):
             h1_bull_mss = rec_ph is not None and h1_closes[i] > rec_ph and h1_closes[i - 1] <= rec_ph
             h1_bear_mss = rec_pl is not None and h1_closes[i] < rec_pl and h1_closes[i - 1] >= rec_pl
 
-    kz_ok       = (not USE_KZ) or in_kill_zone(df_1h.index[-1])
-    current_prc = fmt_price(name, h1_closes[-1])
+    kz_ok = (not USE_KZ) or in_kill_zone(df_1h.index[-1])
 
     # --- D. 1. AŞAMA BİLDİRİMLERİ (4H veya 1H Likidite Temizlendi) ---
     for tf_name, res in [("4H", res_4h), ("1H", res_1h)]:
@@ -305,9 +314,23 @@ def analyze_symbol(name, ticker, state):
 
 if __name__ == "__main__":
     current_state = load_state()
+    status_report = []
+
     for sym_name, yf_ticker in SYMBOLS.items():
         try:
-            analyze_symbol(sym_name, yf_ticker, current_state)
+            analyze_symbol(sym_name, yf_ticker, current_state, status_report)
         except Exception as e:
-            print(f"{sym_name} taranırken hata oluştu: {e}")
+            print(f"{sym_name} taranirken hata olustu: {e}")
+            status_report.append(f"• <b>{sym_name}:</b> Tarama hatası")
+
     save_state(current_state)
+
+    # Manuel olarak "Run workflow" basıldığında Telegram'a test & durum özeti atar
+    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+        ozet = "\n".join(status_report)
+        test_msg = (
+            f"✅ <b>SMC LİKİDİTE BOTU AKTİF (TEST MESAJI)</b>\n"
+            f"<i>Telegram bağlantısı doğrulandı. 10 dakikada bir tarama aktif.</i>\n\n"
+            f"📊 <b>Güncel 1D Ana Yön Özeti:</b>\n{ozet}"
+        )
+        send_telegram(test_msg)
